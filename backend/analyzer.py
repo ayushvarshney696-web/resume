@@ -1,8 +1,22 @@
+"""Resume analysis module implementing multi-factor ATS evaluation and LLM integration."""
+
 import os
 import re
 import json
+import logging
+from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple, Set
+
 from models import AnalysisResult, CategoryScores, WeaknessItem, BulletImprovement, InterviewQuestion
+from config import ROLE_KEYWORD_DATABASE, ACTION_VERBS, WEAK_PHRASES
+from cache import analysis_cache
+
+logger = logging.getLogger("ai_resume_reviewer.analyzer")
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 # Pre-compiled high-efficiency regex patterns
 METRIC_REGEX = re.compile(
@@ -22,78 +36,102 @@ SECTION_PATTERNS = {
     "Projects": re.compile(r"\b(projects|personal projects|portfolio|key achievements|open source)\b", re.IGNORECASE)
 }
 
-ROLE_KEYWORD_DATABASE: Dict[str, Dict[str, List[str]]] = {
-    "Software Engineer": {
-        "required": ["data structures", "algorithms", "git", "ci/cd", "unit testing", "system design", "rest api"],
-        "recommended": ["docker", "kubernetes", "agile", "microservices", "sql", "nosql", "linux", "cloud"]
-    },
-    "Frontend Developer": {
-        "required": ["javascript", "react", "html5", "css3", "typescript", "responsive design", "state management"],
-        "recommended": ["next.js", "tailwind css", "webpack", "vite", "web performance", "accessibility", "jest", "cypress"]
-    },
-    "Backend Developer": {
-        "required": ["python", "node.js", "java", "sql", "postgresql", "restful apis", "database design"],
-        "recommended": ["docker", "redis", "kafka", "graphql", "microservices", "fastapi", "spring boot", "aws"]
-    },
-    "Full Stack Developer": {
-        "required": ["javascript", "react", "node.js", "python", "sql", "git", "rest apis"],
-        "recommended": ["typescript", "docker", "aws", "nosql", "ci/cd", "next.js", "tailwind", "system design"]
-    },
-    "Data Scientist": {
-        "required": ["python", "machine learning", "pandas", "numpy", "sql", "scikit-learn", "data visualization"],
-        "recommended": ["tensorflow", "pytorch", "deep learning", "statistics", "seaborn", "tableau", "bigquery", "feature engineering"]
-    },
-    "Machine Learning Engineer": {
-        "required": ["python", "pytorch", "tensorflow", "deep learning", "mlops", "model deployment", "scikit-learn"],
-        "recommended": ["docker", "kubernetes", "cuda", "onnx", "hugging face", "vector databases", "ci/cd for ml"]
-    },
-    "AI Engineer": {
-        "required": ["python", "llms", "prompt engineering", "langchain", "transformers", "vector databases", "api integration"],
-        "recommended": ["rag", "fine-tuning", "fastapi", "docker", "agentic workflows", "embeddings", "gemini api"]
-    },
-    "Product Manager": {
-        "required": ["product strategy", "agile", "scrum", "user research", "roadmapping", "kpi tracking", "stakeholder management"],
-        "recommended": ["a/b testing", "sql", "jira", "wireframing", "go-to-market", "okrs", "customer journey mapping"]
-    },
-    "UX/UI Designer": {
-        "required": ["figma", "wireframing", "prototyping", "user research", "usability testing", "design systems"],
-        "recommended": ["adobe xd", "accessibility", "wcag", "information architecture", "interaction design", "responsive design"]
-    },
-    "DevOps Engineer": {
-        "required": ["docker", "kubernetes", "ci/cd", "terraform", "linux", "aws", "git"],
-        "recommended": ["ansible", "prometheus", "grafana", "helm", "bash", "jenkins", "infrastructure as code", "azure"]
-    },
-    "Cloud Engineer": {
-        "required": ["aws", "azure", "gcp", "cloud architecture", "networking", "security", "terraform"],
-        "recommended": ["serverless", "iam", "cloudformation", "cost optimization", "docker", "vpn", "linux"]
-    },
-    "Cybersecurity Analyst": {
-        "required": ["network security", "vulnerability assessment", "incident response", "siem", "firewalls", "risk management"],
-        "recommended": ["wireshark", "penetration testing", "nist framework", "soc", "cryptography", "zero trust", "iso 27001"]
-    },
-    "Mobile App Developer": {
-        "required": ["react native", "flutter", "swift", "kotlin", "mobile ui", "rest apis", "app store deployment"],
-        "recommended": ["state management", "offline storage", "push notifications", "ci/cd for mobile", "firebase", "sqlite"]
-    },
-    "Business Analyst": {
-        "required": ["requirements gathering", "process modeling", "data analysis", "sql", "excel", "stakeholder communication"],
-        "recommended": ["tableau", "power bi", "bpmn", "agile", "user stories", "jira", "cost-benefit analysis"]
-    }
-}
-
-ACTION_VERBS = [
-    "spearheaded", "architected", "engineered", "optimized", "developed", "deployed",
-    "implemented", "accelerated", "automated", "streamlined", "orchestrated", "reduced",
-    "increased", "boosted", "delivered", "mentored", "designed", "scaled", "negotiated"
-]
 ACTION_VERB_PATTERNS = [re.compile(r"\b" + verb + r"\b", re.IGNORECASE) for verb in ACTION_VERBS]
 
-WEAK_PHRASES = [
-    "responsible for", "helped with", "worked on", "assisted in", "participated in",
-    "handled tasks", "duties included", "familiar with", "involved in"
-]
 
+# =====================================================================
+# Strategy Pattern: Persona Evaluators
+# =====================================================================
+class PersonaStrategy(ABC):
+    """Abstract Strategy representing an evaluation persona."""
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Persona display name."""
+        pass
+
+    @property
+    @abstractmethod
+    def prompt_guidance(self) -> str:
+        """Guidance instructions injected into LLM prompt."""
+        pass
+
+    @abstractmethod
+    def adjust_score(self, base_score: int, impact_score: int, relevance_score: int) -> int:
+        """Persona-specific algorithmic score weighting."""
+        pass
+
+
+class CareerCoachStrategy(PersonaStrategy):
+    @property
+    def name(self) -> str:
+        return "Career Coach"
+
+    @property
+    def prompt_guidance(self) -> str:
+        return "Adopt an encouraging, growth-oriented mentor persona. Highlight latent potential, recommend high-value certifications, and focus on practical steps to elevate confidence and skills."
+
+    def adjust_score(self, base_score: int, impact_score: int, relevance_score: int) -> int:
+        return min(98, base_score + 4)
+
+
+class StrictATSScannerStrategy(PersonaStrategy):
+    @property
+    def name(self) -> str:
+        return "Strict ATS Scanner"
+
+    @property
+    def prompt_guidance(self) -> str:
+        return "Adopt a rigorous, automated ATS scanner persona. Scrutinize keyword density, standard section headers, parsing readability, and flag formatting or vague descriptions with zero tolerance."
+
+    def adjust_score(self, base_score: int, impact_score: int, relevance_score: int) -> int:
+        return max(25, base_score - 6)
+
+
+class TechnicalHiringManagerStrategy(PersonaStrategy):
+    @property
+    def name(self) -> str:
+        return "Technical Hiring Manager"
+
+    @property
+    def prompt_guidance(self) -> str:
+        return "Adopt an experienced Lead Architect / VP of Engineering persona. Evaluate technical depth, system design evidence, codebase maintainability, production scalability, and modern stack mastery."
+
+    def adjust_score(self, base_score: int, impact_score: int, relevance_score: int) -> int:
+        return int((relevance_score * 0.6) + (impact_score * 0.4))
+
+
+class ExecutiveRecruiterStrategy(PersonaStrategy):
+    @property
+    def name(self) -> str:
+        return "Executive Recruiter"
+
+    @property
+    def prompt_guidance(self) -> str:
+        return "Adopt an executive headhunter persona. Focus heavily on business ROI, quantifiable metrics, scale, revenue acceleration, cost reductions, and senior leadership presence."
+
+    def adjust_score(self, base_score: int, impact_score: int, relevance_score: int) -> int:
+        return int((impact_score * 0.55) + (relevance_score * 0.45))
+
+
+PERSONA_STRATEGIES: Dict[str, PersonaStrategy] = {
+    "Career Coach": CareerCoachStrategy(),
+    "Strict ATS Scanner": StrictATSScannerStrategy(),
+    "Technical Hiring Manager": TechnicalHiringManagerStrategy(),
+    "Executive Recruiter": ExecutiveRecruiterStrategy()
+}
+
+
+# =====================================================================
+# Main Resume Analyzer Service
+# =====================================================================
 class ResumeAnalyzer:
+    """
+    Core resume review service combining Gemini Generative AI
+    with high-efficiency deterministic NLP fallback logic and in-memory LRU caching.
+    """
+
     def __init__(self):
         self.default_api_key = os.getenv("GEMINI_API_KEY", "").strip()
 
@@ -106,11 +144,32 @@ class ResumeAnalyzer:
         user_api_key: Optional[str] = None
     ) -> AnalysisResult:
         """
-        Analyze resume using Gemini AI if key is present;
-        otherwise use the intelligent offline ATS & Career heuristic engine.
+        Evaluate candidate resume with caching, LLM execution, and offline fallback.
+
+        Args:
+            resume_text: Raw text of the resume.
+            job_role: Target job title.
+            job_description: Optional target job description for contextual matching.
+            persona: Advisor persona name.
+            user_api_key: Optional override for Gemini API key.
+
+        Returns:
+            AnalysisResult containing scores, strengths, weaknesses, and rewrites.
+
+        Time Complexity: O(N) where N is text length.
+        Space Complexity: O(K) where K is number of unique keywords.
         """
+        cache_key = analysis_cache.compute_key(
+            resume_text, job_role, job_description, persona, user_api_key
+        )
+        cached = analysis_cache.get(cache_key)
+        if cached:
+            logger.info("Cache hit for analysis key: %s...", cache_key[:12])
+            return cached
+
         active_key = (user_api_key or self.default_api_key or "").strip()
 
+        # Try Gemini AI if a non-placeholder key is provided
         if active_key and not active_key.startswith("AIzaAIzaSyBaVJE0"):
             try:
                 ai_result = self._analyze_with_gemini(
@@ -121,16 +180,20 @@ class ResumeAnalyzer:
                     api_key=active_key
                 )
                 if ai_result:
+                    analysis_cache.put(cache_key, ai_result)
                     return ai_result
             except Exception as e:
-                print(f"Gemini AI evaluation failed ({str(e)}), falling back to offline ATS Engine.")
+                logger.warning("Gemini AI evaluation failed (%s), falling back to offline ATS Engine.", str(e))
 
-        return self._analyze_offline_engine(
+        # Deterministic Fallback Engine
+        offline_result = self._analyze_offline_engine(
             resume_text=resume_text,
             job_role=job_role,
             job_description=job_description,
             persona=persona
         )
+        analysis_cache.put(cache_key, offline_result)
+        return offline_result
 
     def _determine_seniority(self, text_lower: str) -> str:
         """Detect candidate seniority from years of experience and titles."""
@@ -161,13 +224,8 @@ class ResumeAnalyzer:
         persona: str,
         api_key: str
     ) -> Optional[AnalysisResult]:
-        persona_instructions = {
-            "Career Coach": "Adopt an encouraging, growth-oriented mentor persona. Highlight latent potential, recommend high-value certifications, and focus on practical steps to elevate confidence and skills.",
-            "Strict ATS Scanner": "Adopt a rigorous, automated ATS scanner persona. Scrutinize keyword density, standard section headers, parsing readability, and flag formatting or vague descriptions with zero tolerance.",
-            "Technical Hiring Manager": "Adopt an experienced Lead Architect / VP of Engineering persona. Evaluate technical depth, system design evidence, codebase maintainability, production scalability, and modern stack mastery.",
-            "Executive Recruiter": "Adopt an executive headhunter persona. Focus heavily on business ROI, quantifiable metrics, scale, revenue acceleration, cost reductions, and senior leadership presence."
-        }
-        persona_guide = persona_instructions.get(persona, persona_instructions["Career Coach"])
+        strategy = PERSONA_STRATEGIES.get(persona, PERSONA_STRATEGIES["Career Coach"])
+        persona_guide = strategy.prompt_guidance
 
         prompt = f"""
 You are an expert AI Career Strategist and ATS Specialist acting with the persona: {persona}.
@@ -278,13 +336,14 @@ Resume Content:
         persona: str
     ) -> AnalysisResult:
         """
-        Deep deterministic ATS and NLP scoring engine.
-        Optimized with pre-compiled patterns and O(1) set operations.
+        Deep deterministic ATS evaluation utilizing pre-compiled vectors and O(1) matching.
         """
         text_lower = resume_text.lower()
         words = WORDS_REGEX.findall(text_lower)
         word_count = len(words)
         seniority = self._determine_seniority(text_lower)
+
+        strategy = PERSONA_STRATEGIES.get(persona, PERSONA_STRATEGIES["Career Coach"])
 
         # 1. Target Role & Keyword matching
         role_data = ROLE_KEYWORD_DATABASE.get(job_role, {
@@ -304,7 +363,7 @@ Resume Content:
 
         expected_keywords = list(dict.fromkeys(expected_keywords))
 
-        # Keyword matching
+        # Fast keyword membership
         matched_keywords = [kw for kw in expected_keywords if kw in text_lower]
         missing_keywords = [kw for kw in expected_keywords if kw not in text_lower]
 
@@ -330,27 +389,21 @@ Resume Content:
         # 4. Role Relevance
         relevance_score = min(100, int((skills_score * 0.65) + (impact_score * 0.35)))
 
-        # 5. Composite Overall Score
-        overall_score = int(
+        # 5. Composite Base Score
+        base_score = int(
             (relevance_score * 0.35) +
             (skills_score * 0.30) +
             (impact_score * 0.20) +
             (readability_score * 0.15)
         )
 
-        # Persona-specific adjustments
-        if persona == "Strict ATS Scanner":
-            overall_score = max(25, overall_score - 6)
-        elif persona == "Career Coach":
-            overall_score = min(98, overall_score + 4)
-        elif persona == "Executive Recruiter":
-            # Recruiter weights metrics even higher
-            overall_score = int((impact_score * 0.5) + (relevance_score * 0.5))
+        # 6. Apply Strategy Pattern for Persona Weighting
+        overall_score = strategy.adjust_score(base_score, impact_score, relevance_score)
 
         # Pass Probability
         pass_prob = "High (>80%)" if overall_score >= 80 else ("Moderate (65-79%)" if overall_score >= 65 else "Low (<65%)")
 
-        # Strengths
+        # Key Strengths
         strengths = []
         if matched_keywords:
             strengths.append(f"Demonstrates strong foundation in {job_role} core proficiencies ({', '.join(matched_keywords[:4])}).")
@@ -405,7 +458,7 @@ Resume Content:
             )
         ]
 
-        # Action Plan
+        # Strategic Action Plan
         action_plan = [
             f"Embed missing top keywords ({', '.join(missing_keywords[:3]) if missing_keywords else 'cloud architecture'}) into your Skills and Project bullet points.",
             "Transform every bullet point into the Google XYZ formula: 'Accomplished [X], as measured by [Y], by doing [Z]'.",
@@ -413,7 +466,7 @@ Resume Content:
             "Prepare code walkthroughs and architectural trade-off rationales for your featured projects."
         ]
 
-        # Interview Prep
+        # Targeted Interview Questions
         interview_questions = [
             InterviewQuestion(
                 question=f"Can you walk me through the most technically challenging problem you solved in your recent projects relating to {job_role}?",

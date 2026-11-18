@@ -1,9 +1,10 @@
 import io
 import zipfile
-import xml.etree.ElementTree as ET
 import pytest
+import concurrent.futures
 from fastapi.testclient import TestClient
 from main import app
+from cache import analysis_cache
 
 client = TestClient(app)
 
@@ -68,7 +69,7 @@ def test_root_endpoint():
     data = response.json()
     assert data["status"] == "online"
     assert "features" in data
-    assert data["version"] == "2.1.0"
+    assert data["version"] == "2.2.0"
 
 def test_health_endpoint():
     response = client.get("/api/health")
@@ -190,7 +191,7 @@ def test_unsupported_file_extension():
     assert "Unsupported file format" in response.json()["detail"]
 
 def test_oversized_file_rejected():
-    oversized = b"A" * (6 * 1024 * 1024)  # 6 MB (limit is 5 MB)
+    oversized = b"A" * (6 * 1024 * 1024)
     response = client.post(
         "/api/analyze",
         data={"job_role": "Software Engineer"},
@@ -203,3 +204,38 @@ def test_security_headers_present():
     assert response.headers.get("X-Content-Type-Options") == "nosniff"
     assert response.headers.get("X-Frame-Options") == "DENY"
     assert response.headers.get("X-XSS-Protection") == "1; mode=block"
+
+def test_cache_hits_and_stats():
+    analysis_cache.clear()
+    payload = {
+        "resume_text": SAMPLE_RESUME,
+        "job_role": "Software Engineer",
+        "persona": "Career Coach"
+    }
+    # First request: Miss
+    res1 = client.post("/api/analyze-text", json=payload)
+    assert res1.status_code == 200
+    
+    # Second request: Hit
+    res2 = client.post("/api/analyze-text", json=payload)
+    assert res2.status_code == 200
+
+    stats = client.get("/api/cache-stats").json()
+    assert stats["hits"] >= 1
+    assert stats["size"] >= 1
+
+def test_concurrent_requests():
+    payload = {
+        "resume_text": SAMPLE_RESUME,
+        "job_role": "Software Engineer",
+        "persona": "Career Coach"
+    }
+    
+    def make_req():
+        return client.post("/api/analyze-text", json=payload).status_code
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(make_req) for _ in range(5)]
+        results = [f.result() for f in concurrent.futures.as_completed(futures)]
+        
+    assert all(code == 200 for code in results)

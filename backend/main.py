@@ -1,26 +1,35 @@
+"""FastAPI Application for AI Resume Reviewer & Career Strategist."""
+
 import os
+import asyncio
+import logging
 from typing import Optional
+
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-from dotenv import load_dotenv
 
 from models import AnalysisResult, TextAnalysisRequest
-from parser import extract_resume_text, ALLOWED_EXTENSIONS
-from analyzer import ResumeAnalyzer, ROLE_KEYWORD_DATABASE
+from parser import extract_resume_text
+from analyzer import ResumeAnalyzer
+from config import MAX_FILE_SIZE, MAX_TEXT_LENGTH, ROLE_KEYWORD_DATABASE
+from exceptions import ResumeAppException, FileTooLargeException, TextTooShortException
+from cache import analysis_cache
 
-load_dotenv()
-
-MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB maximum file upload limit
-MAX_TEXT_LENGTH = 120000          # 120,000 characters maximum text input limit
+logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s")
+logger = logging.getLogger("ai_resume_reviewer.main")
 
 app = FastAPI(
     title="AI Resume Reviewer & Career Strategist API",
-    description="Intelligent ATS scoring, keyword gap analysis, bullet enhancement, and interview preparation assistant.",
-    version="2.1.0"
+    description="Production-grade ATS evaluation platform with dual-engine AI, candidate seniority detection, and Google XYZ rewrites.",
+    version="2.2.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
 )
 
-# Custom Security Headers Middleware
+# 1. Custom Security Headers Middleware
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response: Response = await call_next(request)
@@ -32,7 +41,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(SecurityHeadersMiddleware)
 
-# Enable CORS for development and deployment
+# 2. GZip Compression Middleware (High Efficiency for payload transfers)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# 3. CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -40,6 +52,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Global Exception Handler
+@app.exception_handler(ResumeAppException)
+async def resume_exception_handler(request: Request, exc: ResumeAppException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.message, "type": exc.__class__.__name__}
+    )
 
 analyzer = ResumeAnalyzer()
 
@@ -133,12 +153,13 @@ B.A. in Economics & Business | Northwestern University (2015 - 2019)
     }
 }
 
-@app.get("/")
+@app.get("/", summary="Root Health & Features")
 async def root():
+    """Return API health status, capabilities, and version information."""
     return {
         "status": "online",
         "service": "AI Resume Reviewer & Career Strategist API",
-        "version": "2.1.0",
+        "version": "2.2.0",
         "features": [
             "Multi-Factor ATS Compatibility Scoring",
             "Keyword Gap Identification",
@@ -146,12 +167,15 @@ async def root():
             "Tailored Interview Question Generation",
             "Multiple Dynamic Personas",
             "Candidate Seniority Detection",
-            "Dual-Engine AI (Gemini 2.0 Flash + Offline Intelligent ATS Engine)"
+            "Dual-Engine AI (Gemini 2.0 Flash + Offline Intelligent ATS Engine)",
+            "Asynchronous Non-Blocking Processing",
+            "Thread-Safe In-Memory LRU Caching"
         ]
     }
 
-@app.get("/api/health")
+@app.get("/api/health", summary="System Health & Catalog")
 async def health_check():
+    """Return operational health, supported roles, and personas."""
     gemini_key_set = bool(os.getenv("GEMINI_API_KEY", "").strip())
     return {
         "status": "healthy",
@@ -166,11 +190,17 @@ async def health_check():
         ]
     }
 
-@app.get("/api/sample-resumes")
+@app.get("/api/sample-resumes", summary="Fetch Sample Resumes")
 async def get_sample_resumes():
+    """Return pre-loaded sample resumes for instant 1-click evaluation."""
     return SAMPLE_RESUMES
 
-@app.post("/api/analyze", response_model=AnalysisResult)
+@app.get("/api/cache-stats", summary="Cache Performance Statistics")
+async def get_cache_stats():
+    """Return real-time cache hits, misses, and ratio."""
+    return analysis_cache.stats()
+
+@app.post("/api/analyze", response_model=AnalysisResult, summary="Upload & Analyze Resume File")
 async def analyze_resume_upload(
     resume: Optional[UploadFile] = File(None),
     resume_text: Optional[str] = Form(None),
@@ -179,10 +209,13 @@ async def analyze_resume_upload(
     persona: Optional[str] = Form("Career Coach"),
     api_key: Optional[str] = Form(None)
 ):
+    """
+    Upload and evaluate a resume file (PDF, DOCX, TXT) or form-encoded text.
+    Executes asynchronously off the main event loop for high concurrency.
+    """
     extracted_text = ""
 
     if resume:
-        # Sanitize filename to prevent path traversal
         clean_filename = os.path.basename(resume.filename or "resume.txt")
         content = await resume.read(MAX_FILE_SIZE + 1)
         
@@ -190,18 +223,14 @@ async def analyze_resume_upload(
             raise HTTPException(status_code=400, detail="Uploaded file is empty.")
             
         if len(content) > MAX_FILE_SIZE:
-            raise HTTPException(status_code=413, detail=f"File exceeds maximum allowed size of {MAX_FILE_SIZE / (1024*1024):.0f} MB.")
+            raise FileTooLargeException(f"File exceeds maximum allowed size of {MAX_FILE_SIZE / (1024*1024):.0f} MB.")
             
-        try:
-            extracted_text, _ = extract_resume_text(clean_filename, content)
-        except ValueError as ve:
-            raise HTTPException(status_code=400, detail=str(ve))
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error parsing resume file: {str(e)}")
+        # Run CPU-bound text extraction in worker thread
+        extracted_text, _ = await asyncio.to_thread(extract_resume_text, clean_filename, content)
 
     elif resume_text and resume_text.strip():
         if len(resume_text) > MAX_TEXT_LENGTH:
-            raise HTTPException(status_code=413, detail=f"Pasted text exceeds maximum limit of {MAX_TEXT_LENGTH:,} characters.")
+            raise FileTooLargeException(f"Pasted text exceeds maximum limit of {MAX_TEXT_LENGTH:,} characters.")
         extracted_text = resume_text.strip()
     else:
         raise HTTPException(
@@ -210,12 +239,11 @@ async def analyze_resume_upload(
         )
 
     if len(extracted_text.strip()) < 30:
-        raise HTTPException(
-            status_code=400,
-            detail="Extracted text is too short to evaluate. Please provide a typed resume with standard sections."
-        )
+        raise TextTooShortException()
 
-    return analyzer.analyze(
+    # Offload CPU-bound NLP & ATS analysis to worker thread pool
+    result = await asyncio.to_thread(
+        analyzer.analyze,
         resume_text=extracted_text,
         job_role=job_role.strip(),
         job_description=(job_description or "").strip(),
@@ -223,12 +251,19 @@ async def analyze_resume_upload(
         user_api_key=api_key.strip() if api_key else None
     )
 
-@app.post("/api/analyze-text", response_model=AnalysisResult)
-async def analyze_text_endpoint(req: TextAnalysisRequest):
-    if not req.resume_text or len(req.resume_text.strip()) < 30:
-        raise HTTPException(status_code=400, detail="Resume text must contain at least 30 characters.")
+    return result
 
-    return analyzer.analyze(
+@app.post("/api/analyze-text", response_model=AnalysisResult, summary="Analyze Pasted Resume JSON")
+async def analyze_text_endpoint(req: TextAnalysisRequest):
+    """
+    Analyze JSON payload containing resume text, role, and persona.
+    Executes CPU-bound analysis asynchronously.
+    """
+    if not req.resume_text or len(req.resume_text.strip()) < 30:
+        raise TextTooShortException()
+
+    return await asyncio.to_thread(
+        analyzer.analyze,
         resume_text=req.resume_text.strip(),
         job_role=req.job_role or "Software Engineer",
         job_description=req.job_description or "",
@@ -236,15 +271,16 @@ async def analyze_text_endpoint(req: TextAnalysisRequest):
         user_api_key=req.api_key
     )
 
+# Backward-compatibility routes
 @app.post("/upload-resume", response_model=AnalysisResult)
 async def upload_resume_alias(file: UploadFile = File(...)):
     content = await file.read(MAX_FILE_SIZE + 1)
     if len(content) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="File too large.")
+        raise FileTooLargeException()
     clean_filename = os.path.basename(file.filename or "resume.pdf")
-    extracted_text, _ = extract_resume_text(clean_filename, content)
-    return analyzer.analyze(resume_text=extracted_text, job_role="Software Engineer")
+    extracted_text, _ = await asyncio.to_thread(extract_resume_text, clean_filename, content)
+    return await asyncio.to_thread(analyzer.analyze, resume_text=extracted_text, job_role="Software Engineer")
 
 @app.post("/upload-text", response_model=AnalysisResult)
 async def upload_text_alias(resume_text: str = Form(...)):
-    return analyzer.analyze(resume_text=resume_text, job_role="Software Engineer")
+    return await asyncio.to_thread(analyzer.analyze, resume_text=resume_text, job_role="Software Engineer")

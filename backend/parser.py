@@ -1,8 +1,16 @@
+"""Document parsing service with stream validation and size limits."""
+
 import io
 import re
 import zipfile
+import logging
 import xml.etree.ElementTree as ET
 from typing import Tuple
+
+from config import MAX_PDF_PAGES, MAX_XML_DECOMPRESSION_BYTES, ALLOWED_EXTENSIONS
+from exceptions import CorruptedFileException, UnsupportedFormatException
+
+logger = logging.getLogger("ai_resume_reviewer.parser")
 
 try:
     import pypdf
@@ -13,9 +21,6 @@ except ImportError:
         PDF_READER = "PyPDF2"
     except ImportError:
         PDF_READER = None
-
-MAX_PDF_PAGES = 30
-MAX_XML_BYTES = 10 * 1024 * 1024  # 10 MB decompression limit
 
 WHITESPACE_REGEX = re.compile(r"[ \t]+")
 NEWLINE_REGEX = re.compile(r"\n{3,}")
@@ -34,17 +39,21 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
         raise RuntimeError("Neither pypdf nor PyPDF2 is installed.")
     
     text_parts = []
-    reader = pypdf.PdfReader(io.BytesIO(file_bytes))
-    page_count = min(len(reader.pages), MAX_PDF_PAGES)
-    
-    for page_idx in range(page_count):
-        try:
-            page = reader.pages[page_idx]
-            page_text = page.extract_text() or ""
-            if page_text.strip():
-                text_parts.append(page_text)
-        except Exception:
-            continue
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+        page_count = min(len(reader.pages), MAX_PDF_PAGES)
+        
+        for page_idx in range(page_count):
+            try:
+                page = reader.pages[page_idx]
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    text_parts.append(page_text)
+            except Exception as e:
+                logger.debug("Page %d extraction error: %s", page_idx, str(e))
+                continue
+    except Exception as e:
+        raise CorruptedFileException(f"Failed to read PDF document: {str(e)}")
             
     return sanitize_text("\n".join(text_parts))
 
@@ -52,10 +61,9 @@ def extract_text_from_docx(file_bytes: bytes) -> str:
     """Extract text from DOCX using standard library zipfile with XML size guard."""
     try:
         with zipfile.ZipFile(io.BytesIO(file_bytes)) as docx:
-            # Check for zip bomb / excessively large XML
             doc_info = docx.getinfo("word/document.xml")
-            if doc_info.file_size > MAX_XML_BYTES:
-                raise ValueError("DOCX contents exceed safe decompression limit.")
+            if doc_info.file_size > MAX_XML_DECOMPRESSION_BYTES:
+                raise CorruptedFileException("DOCX contents exceed safe decompression limit.")
                 
             xml_content = docx.read("word/document.xml")
             tree = ET.fromstring(xml_content)
@@ -70,9 +78,9 @@ def extract_text_from_docx(file_bytes: bytes) -> str:
                     
             return sanitize_text("\n".join(paragraphs))
     except zipfile.BadZipFile:
-        raise ValueError("Invalid DOCX format or corrupted archive.")
+        raise CorruptedFileException("Invalid DOCX format or corrupted archive.")
     except Exception as e:
-        raise ValueError(f"Could not parse DOCX file: {str(e)}")
+        raise CorruptedFileException(f"Could not parse DOCX file: {str(e)}")
 
 def extract_text_from_txt(file_bytes: bytes) -> str:
     """Decode raw text bytes across multiple common encodings."""
@@ -83,8 +91,6 @@ def extract_text_from_txt(file_bytes: bytes) -> str:
             continue
     return sanitize_text(file_bytes.decode("utf-8", errors="ignore"))
 
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".md"}
-
 def extract_resume_text(filename: str, file_bytes: bytes) -> Tuple[str, str]:
     """
     Safely extract text based on verified file extension.
@@ -94,7 +100,7 @@ def extract_resume_text(filename: str, file_bytes: bytes) -> Tuple[str, str]:
     ext = "." + fname_clean.split(".")[-1] if "." in fname_clean else ""
 
     if ext not in ALLOWED_EXTENSIONS:
-        raise ValueError(f"Unsupported file format '{ext}'. Allowed formats: {', '.join(sorted(ALLOWED_EXTENSIONS))}")
+        raise UnsupportedFormatException(f"Unsupported file format '{ext}'. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}")
 
     if ext == ".pdf":
         text = extract_text_from_pdf(file_bytes)
