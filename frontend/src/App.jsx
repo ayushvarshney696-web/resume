@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import ReactMarkdown from "react-markdown";
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 import {
   FileText,
@@ -9,7 +8,6 @@ import {
   Download,
   Copy,
   Sparkles,
-  Settings,
   RefreshCw,
   Target,
   Briefcase,
@@ -19,7 +17,8 @@ import {
   Key,
   X,
   Check,
-  ChevronDown
+  UserCheck,
+  Percent
 } from "lucide-react";
 import "./App.css";
 
@@ -198,7 +197,6 @@ export default function App() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // Robust Multi-Page PDF Download
   const downloadReportPdf = async () => {
     if (!analysisResult) return;
 
@@ -207,7 +205,7 @@ export default function App() {
       const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
       const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-      const pageWidth = 595.28; // A4
+      const pageWidth = 595.28;
       const pageHeight = 841.89;
       const margin = 50;
       const contentWidth = pageWidth - margin * 2;
@@ -236,7 +234,7 @@ export default function App() {
       };
 
       const drawMiniHeader = (page, font) => {
-        page.drawText(`Target Role: ${finalJobRole} | Advisor: ${selectedPersona}`, {
+        page.drawText(`Target Role: ${finalJobRole} | Advisor: ${selectedPersona} | Score: ${analysisResult.overall_score}/100`, {
           x: margin,
           y: pageHeight - 35,
           size: 9,
@@ -267,7 +265,7 @@ export default function App() {
         }
       };
 
-      // Title & Header Banner
+      // Banner
       currentPage.drawRectangle({
         x: margin,
         y: y - 55,
@@ -284,10 +282,10 @@ export default function App() {
         color: rgb(1, 1, 1)
       });
 
-      currentPage.drawText(`Target Role: ${finalJobRole}  |  Persona: ${selectedPersona}  |  Score: ${analysisResult.overall_score}/100`, {
+      currentPage.drawText(`Target: ${finalJobRole}  |  Seniority: ${analysisResult.seniority_level || 'Mid'}  |  Score: ${analysisResult.overall_score}/100`, {
         x: margin + 15,
         y: y - 45,
-        size: 10,
+        size: 9.5,
         font: helvetica,
         color: rgb(0.9, 0.95, 1)
       });
@@ -296,7 +294,7 @@ export default function App() {
 
       // Executive Summary
       checkPageBreak(40);
-      currentPage.drawText("EXECUTIVE SUMMARY", {
+      currentPage.drawText("EXECUTIVE ASSESSMENT", {
         x: margin,
         y,
         size: 12,
@@ -340,7 +338,7 @@ export default function App() {
         y -= 10;
       }
 
-      // Critical Weaknesses
+      // Weaknesses
       if (analysisResult.weaknesses?.length) {
         checkPageBreak(40);
         currentPage.drawText("CRITICAL IMPROVEMENT AREAS", {
@@ -358,7 +356,7 @@ export default function App() {
         y -= 10;
       }
 
-      // Actionable Bullet Rewrites
+      // Actionable Rewrites
       if (analysisResult.bullet_improvements?.length) {
         checkPageBreak(50);
         currentPage.drawText("GOOGLE XYZ FORMULA BULLET REWRITES", {
@@ -409,12 +407,11 @@ export default function App() {
         y -= 16;
         for (const q of analysisResult.interview_questions) {
           writeWrapped(`Q: ${q.question}`, 9.5, helveticaBold, rgb(0.15, 0.15, 0.15));
-          writeWrapped(`Hiring Context: ${q.context}`, 8.5, helvetica, rgb(0.4, 0.4, 0.4));
+          writeWrapped(`Context: ${q.context}`, 8.5, helvetica, rgb(0.4, 0.4, 0.4));
           y -= 6;
         }
       }
 
-      // Draw final page footer
       drawFooter(currentPage, helvetica, pdfDoc.getPageCount());
 
       const pdfBytes = await pdfDoc.save();
@@ -445,10 +442,10 @@ export default function App() {
   return (
     <div className="main-wrapper">
       {/* Top Navbar */}
-      <header className="navbar">
+      <header className="navbar" role="banner">
         <div className="nav-container">
           <div className="nav-brand">
-            <span className="brand-logo">🎯</span>
+            <span className="brand-logo" aria-hidden="true">🎯</span>
             <div>
               <h1 className="brand-title">AI Resume Reviewer</h1>
               <span className="brand-subtitle">Smart Career Advisor & ATS Strategist</span>
@@ -458,23 +455,23 @@ export default function App() {
             <button
               className="settings-trigger-btn"
               onClick={() => setShowSettings(true)}
-              title="Configure API Key"
+              aria-label="Configure AI settings and Gemini API key"
             >
-              <Key size={16} />
+              <Key size={16} aria-hidden="true" />
               <span>{userApiKey ? "API Key Configured" : "AI Settings"}</span>
             </button>
           </div>
         </div>
       </header>
 
-      {/* Main Workspace Layout */}
+      {/* Main Workspace */}
       <main className="workspace-container">
         {/* Left Column: Input Panel */}
-        <section className="input-column">
+        <section className="input-column" aria-label="Resume configuration and input">
           <div className="panel-card">
             <div className="panel-header">
               <h2 className="panel-title">
-                <Briefcase size={20} className="header-icon" /> Target Role & Context
+                <Briefcase size={20} className="header-icon" aria-hidden="true" /> Target Role & Context
               </h2>
               <span className="step-badge">Step 1</span>
             </div>
@@ -496,8 +493,9 @@ export default function App() {
 
             {selectedJobRole === "Custom" && (
               <div className="form-group">
-                <label className="form-label">Enter Custom Role Title</label>
+                <label htmlFor="custom-role-input" className="form-label">Enter Custom Role Title</label>
                 <input
+                  id="custom-role-input"
                   type="text"
                   className="custom-input"
                   placeholder="e.g. Solutions Architect / Staff iOS Engineer"
@@ -508,17 +506,19 @@ export default function App() {
             )}
 
             {/* Advisor Persona Selector */}
-            <div className="form-group">
-              <label className="form-label">Choose Advisor Persona</label>
-              <div className="persona-grid">
+            <fieldset className="form-group">
+              <legend className="form-label">Choose Advisor Persona</legend>
+              <div className="persona-grid" role="radiogroup" aria-label="Advisor Persona">
                 {PERSONAS.map((p) => (
                   <button
                     key={p.id}
                     type="button"
+                    role="radio"
+                    aria-checked={selectedPersona === p.id}
                     className={`persona-card ${selectedPersona === p.id ? "selected" : ""}`}
                     onClick={() => setSelectedPersona(p.id)}
                   >
-                    <span className="persona-icon">{p.icon}</span>
+                    <span className="persona-icon" aria-hidden="true">{p.icon}</span>
                     <span className="persona-title">{p.title}</span>
                   </button>
                 ))}
@@ -526,14 +526,15 @@ export default function App() {
               <p className="persona-hint">
                 {PERSONAS.find((p) => p.id === selectedPersona)?.tagline}
               </p>
-            </div>
+            </fieldset>
 
             {/* Job Description (Optional) */}
             <div className="form-group">
-              <label className="form-label">
-                Target Job Description <span className="label-optional">(Optional, for keyword gap matching)</span>
+              <label htmlFor="job-desc-input" className="form-label">
+                Target Job Description <span className="label-optional">(Optional, for custom keyword gap matching)</span>
               </label>
               <textarea
+                id="job-desc-input"
                 className="custom-textarea"
                 rows={3}
                 placeholder="Paste key requirements or job description from LinkedIn/Indeed..."
@@ -542,17 +543,17 @@ export default function App() {
               />
             </div>
 
-            <div className="divider" />
+            <div className="divider" role="separator" />
 
             {/* Step 2: Resume Content */}
             <div className="panel-header">
               <h2 className="panel-title">
-                <FileText size={20} className="header-icon" /> Resume Input
+                <FileText size={20} className="header-icon" aria-hidden="true" /> Resume Input
               </h2>
               <span className="step-badge">Step 2</span>
             </div>
 
-            {/* Quick Sample Selector */}
+            {/* 1-Click Samples */}
             <div className="sample-bar">
               <span className="sample-label">⚡ 1-Click Samples:</span>
               <button
@@ -578,33 +579,46 @@ export default function App() {
               </button>
             </div>
 
-            {/* Input Mode Tabs */}
-            <div className="mode-tabs">
+            {/* Mode Tabs */}
+            <div className="mode-tabs" role="tablist" aria-label="Resume input format">
               <button
                 type="button"
+                role="tab"
+                id="tab-upload"
+                aria-selected={activeTab === "upload"}
+                aria-controls="panel-upload"
                 className={`tab-btn ${activeTab === "upload" ? "active" : ""}`}
                 onClick={() => setActiveTab("upload")}
               >
-                <UploadCloud size={16} /> Upload Resume (PDF, DOCX, TXT)
+                <UploadCloud size={16} aria-hidden="true" /> Upload Resume (PDF, DOCX, TXT)
               </button>
               <button
                 type="button"
+                role="tab"
+                id="tab-paste"
+                aria-selected={activeTab === "paste"}
+                aria-controls="panel-paste"
                 className={`tab-btn ${activeTab === "paste" ? "active" : ""}`}
                 onClick={() => setActiveTab("paste")}
               >
-                <FileText size={16} /> Paste Text
+                <FileText size={16} aria-hidden="true" /> Paste Text
               </button>
             </div>
 
             {activeTab === "upload" ? (
-              <div className="upload-dropzone">
+              <div
+                id="panel-upload"
+                role="tabpanel"
+                aria-labelledby="tab-upload"
+                className="upload-dropzone"
+              >
                 <label htmlFor="file-input" className="dropzone-label">
-                  <UploadCloud size={36} className="dropzone-icon" />
+                  <UploadCloud size={36} className="dropzone-icon" aria-hidden="true" />
                   <span className="dropzone-main-text">
                     {resumeFile ? `Selected: ${resumeFile.name}` : "Click or drag & drop your resume"}
                   </span>
                   <span className="dropzone-sub-text">
-                    Supports PDF, DOCX, and TXT files (under 10 MB)
+                    Supports PDF, DOCX, and TXT files (up to 5 MB)
                   </span>
                   <input
                     id="file-input"
@@ -621,18 +635,26 @@ export default function App() {
                       type="button"
                       className="remove-file-btn"
                       onClick={() => setResumeFile(null)}
+                      aria-label="Remove uploaded resume"
                     >
-                      <X size={14} /> Remove
+                      <X size={14} aria-hidden="true" /> Remove
                     </button>
                   </div>
                 )}
               </div>
             ) : (
-              <div className="paste-container">
+              <div
+                id="panel-paste"
+                role="tabpanel"
+                aria-labelledby="tab-paste"
+                className="paste-container"
+              >
                 <textarea
+                  id="paste-textarea-field"
                   className="paste-box"
                   rows={9}
-                  placeholder="Paste your full resume text here (experience, skills, education, projects)..."
+                  aria-label="Paste resume content"
+                  placeholder="Paste your full resume text here (experience, education, projects)..."
                   value={pastedText}
                   onChange={(e) => setPastedText(e.target.value)}
                 />
@@ -643,8 +665,8 @@ export default function App() {
             )}
 
             {errorMessage && (
-              <div className="error-alert">
-                <AlertTriangle size={16} />
+              <div className="error-alert" role="alert">
+                <AlertTriangle size={16} aria-hidden="true" />
                 <span>{errorMessage}</span>
               </div>
             )}
@@ -655,15 +677,16 @@ export default function App() {
               className="submit-analyze-btn"
               onClick={runAnalysis}
               disabled={isAnalyzing || !hasInput}
+              aria-busy={isAnalyzing}
             >
               {isAnalyzing ? (
                 <>
-                  <RefreshCw size={18} className="spin" />
+                  <RefreshCw size={18} className="spin" aria-hidden="true" />
                   <span>Analyzing Resume with AI...</span>
                 </>
               ) : (
                 <>
-                  <Sparkles size={18} />
+                  <Sparkles size={18} aria-hidden="true" />
                   <span>Analyze Resume with {selectedPersona}</span>
                 </>
               )}
@@ -672,10 +695,14 @@ export default function App() {
         </section>
 
         {/* Right Column: AI Assistant Report Dashboard */}
-        <section className="results-column">
+        <section
+          className="results-column"
+          aria-label="Analysis report results"
+          aria-live="polite"
+        >
           {analysisResult ? (
             <div className="results-panel">
-              {/* Report Header Card */}
+              {/* Hero Score Card */}
               <div className="report-card hero-score-card">
                 <div className="score-summary-grid">
                   <div className="primary-score-box">
@@ -685,9 +712,17 @@ export default function App() {
                     </div>
                     <div className="score-label-group">
                       <h3 className="score-title">Overall ATS Fit Score</h3>
-                      <span className="engine-badge">
-                        🧠 Engine: {analysisResult.engine || "Intelligent ATS Engine"}
-                      </span>
+                      <div className="meta-badges">
+                        <span className="meta-badge engine-badge">
+                          🧠 {analysisResult.engine || "Intelligent ATS Engine"}
+                        </span>
+                        <span className="meta-badge seniority-badge">
+                          <UserCheck size={12} aria-hidden="true" /> {analysisResult.seniority_level || "Mid-Level"}
+                        </span>
+                        <span className="meta-badge prob-badge">
+                          <Percent size={12} aria-hidden="true" /> Pass: {analysisResult.ats_pass_probability || "Moderate"}
+                        </span>
+                      </div>
                     </div>
                   </div>
 
@@ -699,7 +734,7 @@ export default function App() {
                             <span>Role Relevance & Keywords</span>
                             <span>{analysisResult.category_scores.role_relevance}%</span>
                           </div>
-                          <div className="progress-track">
+                          <div className="progress-track" role="progressbar" aria-valuenow={analysisResult.category_scores.role_relevance} aria-valuemin="0" aria-valuemax="100">
                             <div
                               className="progress-fill"
                               style={{ width: `${analysisResult.category_scores.role_relevance}%` }}
@@ -712,7 +747,7 @@ export default function App() {
                             <span>Impact & Metrics (XYZ Formula)</span>
                             <span>{analysisResult.category_scores.impact_quantification}%</span>
                           </div>
-                          <div className="progress-track">
+                          <div className="progress-track" role="progressbar" aria-valuenow={analysisResult.category_scores.impact_quantification} aria-valuemin="0" aria-valuemax="100">
                             <div
                               className="progress-fill"
                               style={{ width: `${analysisResult.category_scores.impact_quantification}%` }}
@@ -725,7 +760,7 @@ export default function App() {
                             <span>ATS Readability & Sections</span>
                             <span>{analysisResult.category_scores.ats_readability}%</span>
                           </div>
-                          <div className="progress-track">
+                          <div className="progress-track" role="progressbar" aria-valuenow={analysisResult.category_scores.ats_readability} aria-valuemin="0" aria-valuemax="100">
                             <div
                               className="progress-fill"
                               style={{ width: `${analysisResult.category_scores.ats_readability}%` }}
@@ -738,7 +773,7 @@ export default function App() {
                             <span>Skills & Competencies Match</span>
                             <span>{analysisResult.category_scores.skills_alignment}%</span>
                           </div>
-                          <div className="progress-track">
+                          <div className="progress-track" role="progressbar" aria-valuenow={analysisResult.category_scores.skills_alignment} aria-valuemin="0" aria-valuemax="100">
                             <div
                               className="progress-fill"
                               style={{ width: `${analysisResult.category_scores.skills_alignment}%` }}
@@ -752,33 +787,33 @@ export default function App() {
 
                 <div className="report-actions-bar">
                   <button type="button" className="action-btn-pdf" onClick={downloadReportPdf}>
-                    <Download size={16} /> Download Multi-Page PDF Report
+                    <Download size={16} aria-hidden="true" /> Download Multi-Page PDF Report
                   </button>
                   <button type="button" className="action-btn-copy" onClick={copyToClipboard}>
-                    {copied ? <Check size={16} /> : <Copy size={16} />}
+                    {copied ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
                     {copied ? "Copied!" : "Copy Markdown"}
                   </button>
                 </div>
               </div>
 
-              {/* Executive Summary */}
+              {/* Executive Assessment */}
               <div className="report-card">
                 <h3 className="section-title">
-                  <Target size={18} className="section-icon" /> Executive Assessment
+                  <Target size={18} className="section-icon" aria-hidden="true" /> Executive Assessment
                 </h3>
                 <p className="summary-text">{analysisResult.summary}</p>
               </div>
 
-              {/* Strengths & Weaknesses Grid */}
+              {/* Strengths & Weaknesses */}
               <div className="dual-grid">
                 <div className="report-card strengths-card">
                   <h3 className="section-title text-green">
-                    <CheckCircle2 size={18} className="section-icon" /> Key Strengths
+                    <CheckCircle2 size={18} className="section-icon" aria-hidden="true" /> Key Strengths
                   </h3>
                   <ul className="bullet-list">
                     {analysisResult.strengths?.map((s, idx) => (
                       <li key={idx} className="strength-item">
-                        <Check size={14} className="bullet-check" />
+                        <Check size={14} className="bullet-check" aria-hidden="true" />
                         <span>{s}</span>
                       </li>
                     ))}
@@ -787,7 +822,7 @@ export default function App() {
 
                 <div className="report-card weaknesses-card">
                   <h3 className="section-title text-amber">
-                    <AlertTriangle size={18} className="section-icon" /> Critical Improvement Areas
+                    <AlertTriangle size={18} className="section-icon" aria-hidden="true" /> Critical Improvement Areas
                   </h3>
                   <div className="weakness-list">
                     {analysisResult.weaknesses?.map((w, idx) => (
@@ -809,7 +844,7 @@ export default function App() {
               {(analysisResult.matched_keywords?.length > 0 || analysisResult.missing_keywords?.length > 0) && (
                 <div className="report-card">
                   <h3 className="section-title">
-                    <Award size={18} className="section-icon" /> Keyword Gap Analysis
+                    <Award size={18} className="section-icon" aria-hidden="true" /> Keyword Gap Analysis
                   </h3>
                   <div className="keywords-wrapper">
                     {analysisResult.matched_keywords?.length > 0 && (
@@ -836,11 +871,11 @@ export default function App() {
                 </div>
               )}
 
-              {/* Bullet Point Enhancements (Google XYZ formula) */}
+              {/* Google XYZ Formula Bullet Rewrites */}
               {analysisResult.bullet_improvements?.length > 0 && (
                 <div className="report-card">
                   <h3 className="section-title">
-                    <Sparkles size={18} className="section-icon" /> Actionable Bullet Rewrites (Google XYZ Formula)
+                    <Sparkles size={18} className="section-icon" aria-hidden="true" /> Actionable Bullet Rewrites (Google XYZ Formula)
                   </h3>
                   <div className="rewrite-list">
                     {analysisResult.bullet_improvements.map((b, idx) => (
@@ -866,12 +901,12 @@ export default function App() {
               {analysisResult.action_plan?.length > 0 && (
                 <div className="report-card">
                   <h3 className="section-title">
-                    <BookOpen size={18} className="section-icon" /> Strategic Action Plan
+                    <BookOpen size={18} className="section-icon" aria-hidden="true" /> Strategic Action Plan
                   </h3>
                   <div className="action-steps">
                     {analysisResult.action_plan.map((step, idx) => (
                       <div key={idx} className="step-card">
-                        <span className="step-number">{idx + 1}</span>
+                        <span className="step-number" aria-hidden="true">{idx + 1}</span>
                         <span className="step-content">{step}</span>
                       </div>
                     ))}
@@ -879,11 +914,11 @@ export default function App() {
                 </div>
               )}
 
-              {/* Interview Prep Questions */}
+              {/* Targeted Interview Questions */}
               {analysisResult.interview_questions?.length > 0 && (
                 <div className="report-card">
                   <h3 className="section-title">
-                    <HelpCircle size={18} className="section-icon" /> Targeted Interview Questions
+                    <HelpCircle size={18} className="section-icon" aria-hidden="true" /> Targeted Interview Questions
                   </h3>
                   <div className="interview-list">
                     {analysisResult.interview_questions.map((q, idx) => (
@@ -903,7 +938,7 @@ export default function App() {
           ) : (
             <div className="placeholder-panel">
               <div className="placeholder-content">
-                <span className="placeholder-hero-icon">📄</span>
+                <span className="placeholder-hero-icon" aria-hidden="true">📄</span>
                 <h3 className="placeholder-title">Ready to Review Your Resume</h3>
                 <p className="placeholder-text">
                   Choose your target role, select an AI advisor persona, and upload or paste your resume on the left.
@@ -923,16 +958,23 @@ export default function App() {
 
       {/* Settings Modal */}
       {showSettings && (
-        <div className="modal-overlay" onClick={() => setShowSettings(false)}>
+        <div
+          className="modal-overlay"
+          onClick={() => setShowSettings(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="modal-settings-title"
+        >
           <div className="modal-card" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h3 className="modal-title">⚙️ AI Platform & Engine Settings</h3>
+              <h3 id="modal-settings-title" className="modal-title">⚙️ AI Platform & Engine Settings</h3>
               <button
                 type="button"
                 className="modal-close-btn"
                 onClick={() => setShowSettings(false)}
+                aria-label="Close settings modal"
               >
-                <X size={18} />
+                <X size={18} aria-hidden="true" />
               </button>
             </div>
             <div className="modal-body">
@@ -940,7 +982,7 @@ export default function App() {
                 By default, this application utilizes its high-precision <strong>Built-in ATS & NLP Intelligence Engine</strong>, which executes completely offline with zero latency and high consistency.
               </p>
               <div className="form-group">
-                <label className="form-label">
+                <label htmlFor="api-key-input" className="form-label">
                   Google Gemini API Key <span className="label-optional">(Optional)</span>
                 </label>
                 <input
@@ -949,6 +991,7 @@ export default function App() {
                   placeholder="AIzaSy..."
                   defaultValue={userApiKey}
                   id="api-key-input"
+                  autoComplete="off"
                 />
                 <span className="input-hint">
                   Saved only in your browser session for direct API calls.

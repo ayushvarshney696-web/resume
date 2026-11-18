@@ -568,15 +568,48 @@ body {
   color: var(--text-main);
 }
 
-.engine-badge {
+.meta-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.4rem;
+  justify-content: center;
+}
+
+.meta-badge {
   font-size: 0.72rem;
-  color: #0369a1;
-  background-color: #e0f2fe;
-  padding: 0.2rem 0.5rem;
-  border-radius: 12px;
   font-weight: 600;
-  display: inline-block;
-  margin-top: 0.3rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.engine-badge {
+  background-color: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+
+.seniority-badge {
+  background-color: #f3e8ff;
+  color: #7e22ce;
+  border: 1px solid #e9d5ff;
+}
+
+.prob-badge {
+  background-color: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
 /* Progress bars */

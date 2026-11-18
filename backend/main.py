@@ -1,23 +1,38 @@
 import os
 from typing import Optional
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from dotenv import load_dotenv
 
 from models import AnalysisResult, TextAnalysisRequest
-from parser import extract_resume_text
+from parser import extract_resume_text, ALLOWED_EXTENSIONS
 from analyzer import ResumeAnalyzer, ROLE_KEYWORD_DATABASE
 
-# Load environment variables
 load_dotenv()
+
+MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB maximum file upload limit
+MAX_TEXT_LENGTH = 120000          # 120,000 characters maximum text input limit
 
 app = FastAPI(
     title="AI Resume Reviewer & Career Strategist API",
     description="Intelligent ATS scoring, keyword gap analysis, bullet enhancement, and interview preparation assistant.",
-    version="2.0.0"
+    version="2.1.0"
 )
 
-# Enable CORS for all local and deployed origins
+# Custom Security Headers Middleware
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response: Response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+# Enable CORS for development and deployment
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -123,15 +138,15 @@ async def root():
     return {
         "status": "online",
         "service": "AI Resume Reviewer & Career Strategist API",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "features": [
-            "ATS Compatibility Scoring",
+            "Multi-Factor ATS Compatibility Scoring",
             "Keyword Gap Identification",
-            "Quantified Impact Evaluation",
-            "Google XYZ Bullet Enhancement",
-            "Interview Question Generation",
+            "Quantified Impact Evaluation (Google XYZ Formula)",
+            "Tailored Interview Question Generation",
             "Multiple Dynamic Personas",
-            "Dual AI Engine (Gemini 2.0 Flash + Offline Intelligent ATS Engine)"
+            "Candidate Seniority Detection",
+            "Dual-Engine AI (Gemini 2.0 Flash + Offline Intelligent ATS Engine)"
         ]
     }
 
@@ -141,6 +156,7 @@ async def health_check():
     return {
         "status": "healthy",
         "gemini_configured": gemini_key_set,
+        "max_file_size_mb": MAX_FILE_SIZE / (1024 * 1024),
         "supported_roles": list(ROLE_KEYWORD_DATABASE.keys()),
         "supported_personas": [
             "Career Coach",
@@ -164,41 +180,53 @@ async def analyze_resume_upload(
     api_key: Optional[str] = Form(None)
 ):
     extracted_text = ""
-    file_type = "Pasted Text"
 
     if resume:
-        content = await resume.read()
+        # Sanitize filename to prevent path traversal
+        clean_filename = os.path.basename(resume.filename or "resume.txt")
+        content = await resume.read(MAX_FILE_SIZE + 1)
+        
         if not content:
             raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-        extracted_text, file_type = extract_resume_text(resume.filename, content)
+            
+        if len(content) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=413, detail=f"File exceeds maximum allowed size of {MAX_FILE_SIZE / (1024*1024):.0f} MB.")
+            
+        try:
+            extracted_text, _ = extract_resume_text(clean_filename, content)
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error parsing resume file: {str(e)}")
+
     elif resume_text and resume_text.strip():
+        if len(resume_text) > MAX_TEXT_LENGTH:
+            raise HTTPException(status_code=413, detail=f"Pasted text exceeds maximum limit of {MAX_TEXT_LENGTH:,} characters.")
         extracted_text = resume_text.strip()
     else:
         raise HTTPException(
             status_code=400,
-            detail="Please provide a resume by uploading a file or pasting resume text."
+            detail="Please provide a resume by uploading a file (PDF, DOCX, TXT) or pasting text."
         )
 
-    if not extracted_text.strip():
+    if len(extracted_text.strip()) < 30:
         raise HTTPException(
             status_code=400,
-            detail="Could not extract readable text from the file. Please upload a standard PDF, DOCX, or text file."
+            detail="Extracted text is too short to evaluate. Please provide a typed resume with standard sections."
         )
 
-    result = analyzer.analyze(
+    return analyzer.analyze(
         resume_text=extracted_text,
-        job_role=job_role,
-        job_description=job_description or "",
-        persona=persona or "Career Coach",
-        user_api_key=api_key
+        job_role=job_role.strip(),
+        job_description=(job_description or "").strip(),
+        persona=(persona or "Career Coach").strip(),
+        user_api_key=api_key.strip() if api_key else None
     )
-
-    return result
 
 @app.post("/api/analyze-text", response_model=AnalysisResult)
 async def analyze_text_endpoint(req: TextAnalysisRequest):
-    if not req.resume_text or not req.resume_text.strip():
-        raise HTTPException(status_code=400, detail="Resume text cannot be empty.")
+    if not req.resume_text or len(req.resume_text.strip()) < 30:
+        raise HTTPException(status_code=400, detail="Resume text must contain at least 30 characters.")
 
     return analyzer.analyze(
         resume_text=req.resume_text.strip(),
@@ -208,11 +236,13 @@ async def analyze_text_endpoint(req: TextAnalysisRequest):
         user_api_key=req.api_key
     )
 
-# Backward-compatibility alias
 @app.post("/upload-resume", response_model=AnalysisResult)
 async def upload_resume_alias(file: UploadFile = File(...)):
-    content = await file.read()
-    extracted_text, _ = extract_resume_text(file.filename, content)
+    content = await file.read(MAX_FILE_SIZE + 1)
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File too large.")
+    clean_filename = os.path.basename(file.filename or "resume.pdf")
+    extracted_text, _ = extract_resume_text(clean_filename, content)
     return analyzer.analyze(resume_text=extracted_text, job_role="Software Engineer")
 
 @app.post("/upload-text", response_model=AnalysisResult)

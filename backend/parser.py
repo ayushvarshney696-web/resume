@@ -14,28 +14,52 @@ except ImportError:
     except ImportError:
         PDF_READER = None
 
+MAX_PDF_PAGES = 30
+MAX_XML_BYTES = 10 * 1024 * 1024  # 10 MB decompression limit
+
+WHITESPACE_REGEX = re.compile(r"[ \t]+")
+NEWLINE_REGEX = re.compile(r"\n{3,}")
+CRLF_REGEX = re.compile(r"\r\n|\r")
+
+def sanitize_text(text: str) -> str:
+    """Normalize and sanitize text extracted from documents."""
+    text = CRLF_REGEX.sub("\n", text)
+    text = WHITESPACE_REGEX.sub(" ", text)
+    text = NEWLINE_REGEX.sub("\n\n", text)
+    return text.strip()
+
 def extract_text_from_pdf(file_bytes: bytes) -> str:
-    """Extract text from PDF using pypdf or PyPDF2."""
+    """Extract text from PDF using pypdf or PyPDF2 with page limit protection."""
     if not PDF_READER:
         raise RuntimeError("Neither pypdf nor PyPDF2 is installed.")
     
     text_parts = []
     reader = pypdf.PdfReader(io.BytesIO(file_bytes))
-    for page_idx, page in enumerate(reader.pages):
-        page_text = page.extract_text() or ""
-        if page_text.strip():
-            text_parts.append(page_text)
+    page_count = min(len(reader.pages), MAX_PDF_PAGES)
+    
+    for page_idx in range(page_count):
+        try:
+            page = reader.pages[page_idx]
+            page_text = page.extract_text() or ""
+            if page_text.strip():
+                text_parts.append(page_text)
+        except Exception:
+            continue
             
-    return "\n".join(text_parts).strip()
+    return sanitize_text("\n".join(text_parts))
 
 def extract_text_from_docx(file_bytes: bytes) -> str:
-    """Extract text from DOCX using standard library zipfile and XML parser."""
+    """Extract text from DOCX using standard library zipfile with XML size guard."""
     try:
         with zipfile.ZipFile(io.BytesIO(file_bytes)) as docx:
+            # Check for zip bomb / excessively large XML
+            doc_info = docx.getinfo("word/document.xml")
+            if doc_info.file_size > MAX_XML_BYTES:
+                raise ValueError("DOCX contents exceed safe decompression limit.")
+                
             xml_content = docx.read("word/document.xml")
             tree = ET.fromstring(xml_content)
             
-            # W namespace
             w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
             paragraphs = []
             
@@ -44,51 +68,52 @@ def extract_text_from_docx(file_bytes: bytes) -> str:
                 if texts:
                     paragraphs.append("".join(texts))
                     
-            return "\n".join(paragraphs).strip()
+            return sanitize_text("\n".join(paragraphs))
+    except zipfile.BadZipFile:
+        raise ValueError("Invalid DOCX format or corrupted archive.")
     except Exception as e:
         raise ValueError(f"Could not parse DOCX file: {str(e)}")
 
 def extract_text_from_txt(file_bytes: bytes) -> str:
-    """Decode raw text bytes with multiple encodings."""
+    """Decode raw text bytes across multiple common encodings."""
     for encoding in ("utf-8", "utf-16", "latin-1", "cp1252"):
         try:
-            return file_bytes.decode(encoding).strip()
+            return sanitize_text(file_bytes.decode(encoding))
         except UnicodeDecodeError:
             continue
-    return file_bytes.decode("utf-8", errors="ignore").strip()
+    return sanitize_text(file_bytes.decode("utf-8", errors="ignore"))
+
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".md"}
 
 def extract_resume_text(filename: str, file_bytes: bytes) -> Tuple[str, str]:
     """
-    Extract text based on file extension.
+    Safely extract text based on verified file extension.
     Returns (cleaned_text, detected_type)
     """
-    fname_lower = filename.lower()
-    
-    if fname_lower.endswith(".pdf"):
+    fname_clean = filename.strip().lower()
+    ext = "." + fname_clean.split(".")[-1] if "." in fname_clean else ""
+
+    if ext not in ALLOWED_EXTENSIONS:
+        raise ValueError(f"Unsupported file format '{ext}'. Allowed formats: {', '.join(sorted(ALLOWED_EXTENSIONS))}")
+
+    if ext == ".pdf":
         text = extract_text_from_pdf(file_bytes)
-        file_type = "PDF"
-    elif fname_lower.endswith(".docx"):
+        file_type = "PDF Document"
+    elif ext == ".docx":
         text = extract_text_from_docx(file_bytes)
-        file_type = "DOCX"
-    elif fname_lower.endswith(".doc"):
-        # For legacy .doc binary files, try best-effort text extraction
+        file_type = "Word Document (DOCX)"
+    elif ext == ".doc":
         try:
             text = extract_text_from_docx(file_bytes)
-            file_type = "DOC"
+            file_type = "Word Document"
         except Exception:
             text = extract_text_from_txt(file_bytes)
-            file_type = "DOC (Text Extracted)"
-    elif fname_lower.endswith(".txt") or fname_lower.endswith(".md"):
+            file_type = "Word Document (Text Stream)"
+    elif ext in (".txt", ".md"):
         text = extract_text_from_txt(file_bytes)
-        file_type = "TXT"
+        file_type = "Plain Text"
     else:
-        # Fallback to UTF-8 text attempt
         text = extract_text_from_txt(file_bytes)
-        file_type = "Generic Text"
+        file_type = "Text Document"
 
-    # Sanitize and normalize text
-    text = re.sub(r"\r\n|\r", "\n", text)
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    
-    return text.strip(), file_type
+    return sanitize_text(text), file_type
