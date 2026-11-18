@@ -22,7 +22,12 @@ import {
 } from "lucide-react";
 import "./App.css";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
+const rawBase = (import.meta.env.VITE_API_BASE_URL || "").trim();
+const API_BASE = !rawBase
+  ? "/api"
+  : rawBase.replace(/\/+$/, "").endsWith("/api")
+  ? rawBase.replace(/\/+$/, "")
+  : `${rawBase.replace(/\/+$/, "")}/api`;
 
 const PERSONAS = [
   {
